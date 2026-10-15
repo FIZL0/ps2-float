@@ -44,11 +44,9 @@
 //! # What is here
 //!
 //! `sinf cosf tanf asinf acosf atanf atan2f expf logf powf sqrtf`, all on [`crate::F`] arithmetic, and
-//! [`sce`]'s `acosf atan2f powf`.
-//! Argument reduction for `sin`/`cos`/`tan` is exact (fdlibm's own three-step reduction) up to
-//! `2^7·π/2 ≈ 201`; above that this module uses its own exact fixed-point reduction rather than
-//! fdlibm's `__kernel_rem_pio2f`, which can leave the last bit of the result different from the game's.
-//! If your game feeds angles above 201 radians into `sinf`, check that range with the oracle.
+//! [`sce`]'s `acosf atan2f powf sinf cosf tanf`.
+//! Argument reduction for `sin`/`cos`/`tan` is fdlibm's: its three-step reduction up to
+//! `2^7·π/2 ≈ 201`, `__kernel_rem_pio2f` above that, for any finite argument.
 //!
 //! # Notice
 //!
@@ -227,7 +225,7 @@ const NPIO2_HW: [u32; 32] = [
 /// Three progressively longer pieces of π/2 (24 bits each) are subtracted, one more each time the
 /// previous step cancelled too much, which is exact up to `|x| <= 2^7·π/2`. Larger arguments go to
 /// [`rem_pio2_large`].
-fn rem_pio2(x: f32) -> (i32, f32, f32) {
+fn rem_pio2(x: f32, pio2: &[u32; 11]) -> (i32, f32, f32) {
     let hx = x.to_bits() as i32;
     let ix = hx & 0x7fff_ffff;
     let (p1, p1t, p2, p2t, p3, p3t) =
@@ -248,7 +246,7 @@ fn rem_pio2(x: f32) -> (i32, f32, f32) {
         return (if hx > 0 { 1 } else { -1 }, y0.0, y1.0);
     }
     if ix > 0x4349_0f80 {
-        return rem_pio2_large(x);
+        return rem_pio2_large(x, pio2);
     }
     let t = F(fpu::abs(x));
     let n = fpu::to_i32((t * b(0x3f22_f984) + 0.5).0); // round(|x|·2/π)
@@ -281,61 +279,210 @@ fn rem_pio2(x: f32) -> (i32, f32, f32) {
     if hx < 0 { (-n, (-y0).0, (-y1).0) } else { (n, y0.0, y1.0) }
 }
 
-/// Successive 32-bit words of the binary fraction of `2/π`: `2/π = Σ W[i]·2^(-32(i+1))`.
-/// 320 bits, enough for any `f32` (the largest has exponent 127, and we want 64 good bits after the
-/// binary point even when almost everything cancels).
-const TWO_OVER_PI: [u32; 10] = [
-    0xa2f9836e, 0x4e441529, 0xfc2757d1, 0xf534ddc0, 0xdb629599, 0x3c439041, 0xfe5163ab, 0xdebbc561, 0xb7246e3a,
-    0x424dd2e0,
+/// The binary fraction of `2/π` in 8-bit pieces, most significant first: `2/π = Σ IPIO2[i]·2^(-8(i+1))`.
+/// fdlibm's float `two_over_pi` table (198 entries) cut to what an `f32` argument can reach: the largest
+/// float starts at piece 14 and the reduction reads at most 7 + a few recomputation pieces past it.
+const IPIO2: [u8; 96] = [
+    0xa2, 0xf9, 0x83, 0x6e, 0x4e, 0x44, 0x15, 0x29, 0xfc, 0x27, 0x57, 0xd1, 0xf5, 0x34, 0xdd, 0xc0, 0xdb, 0x62,
+    0x95, 0x99, 0x3c, 0x43, 0x90, 0x41, 0xfe, 0x51, 0x63, 0xab, 0xde, 0xbb, 0xc5, 0x61, 0xb7, 0x24, 0x6e, 0x3a,
+    0x42, 0x4d, 0xd2, 0xe0, 0x06, 0x49, 0x2e, 0xea, 0x09, 0xd1, 0x92, 0x1c, 0xfe, 0x1d, 0xeb, 0x1c, 0xb1, 0x29,
+    0xa7, 0x3e, 0xe8, 0x82, 0x35, 0xf5, 0x2e, 0xbb, 0x44, 0x84, 0xe9, 0x9c, 0x70, 0x26, 0xb4, 0x5f, 0x7e, 0x41,
+    0x39, 0x91, 0xd6, 0x39, 0x83, 0x53, 0x39, 0xf4, 0x9c, 0x84, 0x5f, 0x8b, 0xbd, 0xf9, 0x28, 0x3b, 0x1f, 0xf8,
+    0x97, 0xff, 0xde, 0x05, 0x98, 0x0f,
 ];
 
-/// Argument reduction for `|x| > 2^7·π/2`, by exact fixed-point multiplication by `2/π`.
-///
-/// fdlibm uses `__kernel_rem_pio2f` here; this computes the same quantity a different way (the product
-/// `x·2/π` is formed exactly in 344-bit fixed point, so the reduced argument is good to ~100 bits),
-/// which means the reduced argument is right but its last bit may not be *fdlibm's* last bit. Only
-/// `sin`/`cos`/`tan` of arguments above 201 radians are affected: against Hot Shots Tennis' own over 10k
-/// arbitrary finite arguments, 4.6% come out one ulp off. Port `__kernel_rem_pio2f` if a game goes there.
-#[allow(clippy::float_arithmetic)] // exact integer product, then f64 to split the result in two
-fn rem_pio2_large(x: f32) -> (i32, f32, f32) {
+/// `π/2` in 8-bit pieces (`PIo2[i]` holds bits `8i..8i+8` of it), fdlibm's float `PIo2`: each piece exact.
+/// [`sce`] has that build's copy, where the decimal literals were converted toward zero.
+const PIO2: [u32; 11] = [
+    0x3fc90000, 0x39f00000, 0x37da0000, 0x33a20000, 0x2e840000, 0x2b500000, 0x27c20000, 0x22d00000, 0x1fc40000,
+    0x1bc60000, 0x17440000,
+];
+
+/// `scalbnf(x, n)`: `x·2^n` by its exponent field. A denormal or zero comes back as itself; overflow
+/// saturates (`huge·huge`, `±max` on the EE) and underflow flushes (`tiny·tiny`).
+fn scalbnf(x: F, n: i32) -> F {
     let bits = x.to_bits();
-    let neg = bits & 0x8000_0000 != 0;
-    let m = ((bits & 0x007f_ffff) | 0x0080_0000) as u64; // 24-bit mantissa
-    let e = ((bits >> 23) & 0xff) as i32 - 127 - 23; // |x| = m·2^e
-    // p = m · (2/π as a 320-bit fraction), as 11 32-bit limbs, least significant first
-    let mut p = [0u32; 11];
-    let mut carry = 0u64;
-    for (i, &w) in TWO_OVER_PI.iter().rev().enumerate() {
-        let v = m * w as u64 + carry;
-        p[i] = v as u32;
-        carry = v >> 32;
+    let ix = bits & 0x7fff_ffff;
+    if ix <= 0x007f_ffff {
+        return x;
     }
-    p[10] = carry as u32;
-    // value = p · 2^(e - 320): bit k of p has weight 2^(k + e - 320)
-    let shift = 320 - e; // where the binary point sits, in bits above p's bit 0
-    let bit = |k: i32| -> u64 {
-        if !(0..352).contains(&k) { 0 } else { (p[(k / 32) as usize] >> (k % 32)) as u64 & 1 }
+    let k = (ix >> 23) as i32 + n;
+    if (1..0x100).contains(&k) {
+        return F::from_bits((bits & 0x807f_ffff) | (k as u32) << 23);
+    }
+    let big = k >= 0x100 || n > 50000;
+    let t = F(b(if big { 0x7149_f2ca } else { 0x0da2_4260 })); // huge = 1e30, tiny = 1e-30
+    F::from_bits(t.to_bits() | (bits & 0x8000_0000)) * t
+}
+
+/// `floorf(x)`, on the bits. (fdlibm's `huge + x > 0` inexact-flag guards are always true here: they only
+/// run for `|x| < 2^23`.)
+fn floorf(x: F) -> F {
+    let i0 = x.to_bits() as i32;
+    let ix = i0 & 0x7fff_ffff;
+    let j0 = (ix >> 23) - 0x7f;
+    if j0 >= 23 {
+        return x;
+    }
+    if j0 < 0 {
+        return if i0 >= 0 {
+            F::ZERO
+        } else if ix > 0x007f_ffff {
+            F(-1.0)
+        } else {
+            x // a negative denormal (fdlibm tests `ix != 0`; this build `ix` past the denormals)
+        };
+    }
+    let i = 0x007f_ffff >> j0;
+    if i0 & i == 0 {
+        return x; // integral
+    }
+    let i0 = if i0 < 0 { i0 + (0x0080_0000 >> j0) } else { i0 };
+    F::from_bits((i0 & !i) as u32)
+}
+
+/// `__kernel_rem_pio2f(x, y, e0, nx, prec = 2, two_over_pi)`: the reduction of a large argument given as
+/// `nx` 8-bit pieces `x[i]·2^(e0 - 8i)`, by schoolbook multiplication with 8-bit pieces of `2/π` in floats
+/// (each product exact), adding pieces until the fraction has enough bits. Returns `(n & 7, y0, y1)`.
+/// Every step is the EE's float arithmetic in fdlibm's order, so the last bit is the game's.
+fn kernel_rem_pio2(x: &[F], e0: i32, pio2: &[u32; 11]) -> (i32, F, F) {
+    const JK: usize = 7; // init_jk[prec = 2]
+    let (two8, twon8) = (F(256.0), F(0.00390625));
+    let nx = x.len();
+    let jx = nx - 1;
+    let jv = ((e0 - 3) / 8).max(0) as usize;
+    let mut q0 = e0 - 8 * (jv as i32 + 1);
+    let (mut f, mut q, mut fq, mut iq) = ([F::ZERO; 20], [F::ZERO; 20], [F::ZERO; 20], [0i32; 20]);
+    // f[0..=jx+jk] = two_over_pi[jv-jx..=jv+jk]
+    for (i, fi) in f.iter_mut().enumerate().take(jx + JK + 1) {
+        let j = (jv + i) as isize - jx as isize;
+        *fi = if j < 0 { F::ZERO } else { F(fpu::from_i32(IPIO2[j as usize] as i32)) };
+    }
+    let dot = |f: &[F; 20], i: usize| x.iter().enumerate().fold(F::ZERO, |fw, (j, &xj)| fw + xj * f[jx + i - j]);
+    for (i, qi) in q.iter_mut().enumerate().take(JK + 1) {
+        *qi = dot(&f, i);
+    }
+    let mut jz = JK;
+    let (n, ih, mut z) = loop {
+        // distill q[] into 8-bit iq[], most significant last
+        let mut z = q[jz];
+        for (i, j) in (1..=jz).rev().enumerate() {
+            let fw = F(fpu::from_i32(fpu::to_i32((twon8 * z).0)));
+            iq[i] = fpu::to_i32((z - two8 * fw).0);
+            z = q[j - 1] + fw;
+        }
+        // n, and the fraction z
+        z = scalbnf(z, q0);
+        z = z - F(8.0) * floorf(z * F(0.125));
+        let mut n = fpu::to_i32(z.0);
+        z -= F(fpu::from_i32(n));
+        let mut ih = 0;
+        if q0 > 0 {
+            // iq[jz-1] holds n's low bits too
+            let i = iq[jz - 1] >> (8 - q0);
+            n += i;
+            iq[jz - 1] -= i << (8 - q0);
+            ih = iq[jz - 1] >> (7 - q0);
+        } else if q0 == 0 {
+            ih = iq[jz - 1] >> 8;
+        } else if z >= 0.5 {
+            ih = 2;
+        }
+        if ih > 0 {
+            // the fraction is past 1/2: take 1 - q
+            n += 1;
+            let mut carry = false;
+            for v in iq.iter_mut().take(jz) {
+                if carry {
+                    *v = 0xff - *v;
+                } else if *v != 0 {
+                    carry = true;
+                    *v = 0x100 - *v;
+                }
+            }
+            match q0 {
+                1 => iq[jz - 1] &= 0x7f,
+                2 => iq[jz - 1] &= 0x3f,
+                _ => {}
+            }
+            if ih == 2 {
+                z = F::ONE - z;
+                if carry {
+                    z -= scalbnf(F::ONE, q0);
+                }
+            }
+        }
+        // everything below n cancelled: bring in more pieces of 2/π and go again
+        if z == 0.0 && iq[JK..jz].iter().all(|&v| v == 0) {
+            let k = (1..).find(|&k| iq[JK - k] != 0).unwrap();
+            for i in jz + 1..=jz + k {
+                f[jx + i] = F(fpu::from_i32(IPIO2[jv + i] as i32));
+                q[i] = dot(&f, i);
+            }
+            jz += k;
+            continue;
+        }
+        break (n, ih, z);
     };
-    let window = |top: i32| -> u128 {
-        // the 128 bits of p ending just below bit `top`
-        (0..128).fold(0u128, |a, i| a | (bit(top - 1 - i) as u128) << (127 - i))
-    };
-    let n_low = (0..2).fold(0i32, |a, i| a | (bit(shift + i) as i32) << i); // the quotient mod 4
-    let frac = window(shift);
-    // round to nearest: a fraction >= 1/2 belongs to the next multiple of π/2
-    let (n, frac) = if frac >> 127 != 0 {
-        // reading the fraction as i128 *is* frac - 1 in units of 2^-128, which is what we want
-        ((n_low + 1) & 3, frac as i128)
+    // drop zero pieces, or split the remaining z into 8-bit ones
+    if z == 0.0 {
+        jz -= 1;
+        q0 -= 8;
+        while iq[jz] == 0 {
+            jz -= 1;
+            q0 -= 8;
+        }
     } else {
-        (n_low, frac as i128)
-    };
-    // frac is an exact 128-bit fraction in (-1/2, 1/2]; f64 keeps 53 of its bits, which leaves the
-    // result good to ~2^-100 — far below the last bit of the y1 tail below.
-    let f = frac as f64 * f64::from_bits(0x37f0_0000_0000_0000); // × 2^-128
-    let y = f * core::f64::consts::FRAC_PI_2; // × π/2 (to f64's 53 bits)
-    let y0 = y as f32;
-    let y1 = (y - y0 as f64) as f32;
-    if neg { (-n, -y0, -y1) } else { (n, y0, y1) }
+        z = scalbnf(z, -q0);
+        if z >= two8 {
+            let fw = F(fpu::from_i32(fpu::to_i32((twon8 * z).0)));
+            iq[jz] = fpu::to_i32((z - two8 * fw).0);
+            jz += 1;
+            q0 += 8;
+            iq[jz] = fpu::to_i32(fw.0);
+        } else {
+            iq[jz] = fpu::to_i32(z.0);
+        }
+    }
+    // the pieces as floats, then times π/2
+    let mut fw = scalbnf(F::ONE, q0);
+    for i in (0..=jz).rev() {
+        q[i] = fw * F(fpu::from_i32(iq[i]));
+        fw *= twon8;
+    }
+    for i in (0..=jz).rev() {
+        fq[jz - i] = (0..=JK.min(jz - i)).fold(F::ZERO, |fw, k| fw + F(b(pio2[k])) * q[i + k]);
+    }
+    // compress fq[] into y0 + y1
+    let fw = (0..=jz).rev().fold(F::ZERO, |fw, i| fw + fq[i]);
+    let y0 = if ih == 0 { fw } else { -fw };
+    let fw = (1..=jz).fold(fq[0] - fw, |fw, i| fw + fq[i]);
+    let y1 = if ih == 0 { fw } else { -fw };
+    (n & 7, y0, y1)
+}
+
+/// Argument reduction for `|x| > 2^7·π/2`, as fdlibm's `__ieee754_rem_pio2f` does it: `x` cut into three
+/// 8-bit pieces of its mantissa, handed to [`kernel_rem_pio2`].
+///
+/// It only reads `x`'s bits, so an exponent-255 pattern (Inf/NaN elsewhere) is the number `2^128·1.m` here,
+/// not the `±max` the FPU would read: callers hand it the raw argument, as the game's `sinf` does.
+fn rem_pio2_large(x: f32, pio2: &[u32; 11]) -> (i32, f32, f32) {
+    let hx = x.to_bits() as i32;
+    let ix = hx & 0x7fff_ffff;
+    let e0 = (ix >> 23) - 134; // ilogb(|x|) - 7
+    let mut z = F::from_bits((ix - (e0 << 23)) as u32); // |x|·2^-e0, in [2^7, 2^8)
+    let mut tx = [F::ZERO; 3];
+    for t in tx.iter_mut().take(2) {
+        *t = F(fpu::from_i32(fpu::to_i32(z.0)));
+        z = (z - *t) * F(256.0);
+    }
+    tx[2] = z;
+    let mut nx = 3;
+    while tx[nx - 1] == 0.0 {
+        nx -= 1;
+    }
+    let (n, y0, y1) = kernel_rem_pio2(&tx[..nx], e0, pio2);
+    if hx < 0 { (-n, (-y0).0, (-y1).0) } else { (n, y0.0, y1.0) }
 }
 
 /// A C function's argument as the function sees it. Its integer tests read the register's raw bits, so a
@@ -348,11 +495,16 @@ fn arg(x: f32) -> f32 {
 
 /// `sinf`.
 pub fn sinf(x: f32) -> f32 {
-    let x = arg(x);
+    sinf_with(x, &PIO2)
+}
+
+/// `sinf` with a build's own `PIo2` table (only arguments above 201 radians read it).
+pub(crate) fn sinf_with(raw: f32, pio2: &[u32; 11]) -> f32 {
+    let x = arg(raw);
     if x.to_bits() & 0x7fff_ffff <= 0x3f49_0fd8 {
         return k_sin(x, 0.0, false).0; // |x| <= π/4
     }
-    let (n, y0, y1) = rem_pio2(x);
+    let (n, y0, y1) = rem_pio2(raw, pio2);
     let r = match n & 3 {
         0 => k_sin(y0, y1, true),
         1 => k_cos(y0, y1),
@@ -364,11 +516,16 @@ pub fn sinf(x: f32) -> f32 {
 
 /// `cosf`.
 pub fn cosf(x: f32) -> f32 {
-    let x = arg(x);
+    cosf_with(x, &PIO2)
+}
+
+/// `cosf` with a build's own `PIo2` table (only arguments above 201 radians read it).
+pub(crate) fn cosf_with(raw: f32, pio2: &[u32; 11]) -> f32 {
+    let x = arg(raw);
     if x.to_bits() & 0x7fff_ffff <= 0x3f49_0fd8 {
         return k_cos(x, 0.0).0;
     }
-    let (n, y0, y1) = rem_pio2(x);
+    let (n, y0, y1) = rem_pio2(raw, pio2);
     let r = match n & 3 {
         0 => k_cos(y0, y1),
         1 => -k_sin(y0, y1, true),
@@ -380,11 +537,16 @@ pub fn cosf(x: f32) -> f32 {
 
 /// `tanf`.
 pub fn tanf(x: f32) -> f32 {
-    let x = arg(x);
+    tanf_with(x, &PIO2)
+}
+
+/// `tanf` with a build's own `PIo2` table (only arguments above 201 radians read it).
+pub(crate) fn tanf_with(raw: f32, pio2: &[u32; 11]) -> f32 {
+    let x = arg(raw);
     if x.to_bits() & 0x7fff_ffff <= 0x3f49_0fda {
         return k_tan(x, 0.0, 1).0;
     }
-    let (n, y0, y1) = rem_pio2(x);
+    let (n, y0, y1) = rem_pio2(raw, pio2);
     k_tan(y0, y1, 1 - ((n & 1) << 1)).0
 }
 

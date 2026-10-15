@@ -31,6 +31,21 @@ fn shares_the_generic_kernels_and_differs_where_the_builds_do() {
     assert!(differ.iter().all(|&n| n > 0), "the two builds never disagreed: {differ:?}");
 }
 
+/// Above 2^7·π/2 the reduction is `__kernel_rem_pio2f`, which reads this build's `PIo2` pieces. Values from Hot
+/// Shots Tennis' own `sinf`/`cosf`/`tanf` (ps2-oracle; the 20k-input run is opentennis' `hst-oracle` libm test).
+#[test]
+fn large_arguments_as_the_game_reduces_them() {
+    let game = |f: fn(f32) -> f32, x: u32| f(f32::from_bits(x)).to_bits();
+    // where this build's table changes the last bit (the generic one gives …97, …e0, …40)
+    assert_eq!(game(sce::sinf, 0x6561_a3b4), 0xbed4_0b96);
+    assert_eq!(game(sce::cosf, 0x5d7d_e424), 0x3dd9_7bdf);
+    assert_eq!(game(sce::tanf, 0x4b1c_fffc), 0xc130_4e41);
+    // near a multiple of π/2 the chopped reduction is ~2^-22 off in absolute terms, as the game's is
+    assert_eq!(game(sce::sinf, 0x4b18_4093), 0x3b15_fb00); // 9978003: true sin 0.0022885795…
+    assert_eq!(game(sce::sinf, 1.0e30f32.to_bits()), 0xbf4a_89b0);
+    assert_eq!(game(sce::sinf, 3.0e38f32.to_bits()), 0x3f5f_f9c4);
+}
+
 #[test]
 fn edge_cases_of_this_build() {
     assert_eq!(sce::powf(4.0, 0.5), 2.0, "a square root, by sqrtf");

@@ -51,6 +51,21 @@ fn sweep(name: &str, n: u32, lo: f64, hi: f64, ours: impl Fn(f32) -> f32, exact:
     println!("{name:8} {:>5.2} ulp over {n} inputs in [{lo}, {hi})", worst.0);
 }
 
+/// Like [`sweep`], with the worst absolute error.
+fn sweep_abs(name: &str, n: u32, lo: f64, hi: f64, ours: impl Fn(f32) -> f32, exact: impl Fn(f64) -> f64, limit: f64) {
+    let mut rng = Rng(0x1234_5678);
+    let mut worst = (0.0f64, 0.0f32);
+    for _ in 0..n {
+        let x = rng.range(lo, hi);
+        let e = (ours(x) as f64 - exact(x as f64)).abs();
+        if e > worst.0 {
+            worst = (e, x);
+        }
+    }
+    assert!(worst.0 <= limit, "{name}: off by {:e} at x = {:?} ({:#010x})", worst.0, worst.1, worst.1.to_bits());
+    println!("{name:8} {:>9.2e} absolute over {n} inputs in [{lo}, {hi})", worst.0);
+}
+
 #[test]
 fn sqrt_is_correctly_rounded() {
     // sqrt is specified exactly by IEEE, so our integer algorithm must agree with the host's bit for bit.
@@ -75,10 +90,12 @@ fn trig_is_accurate() {
     sweep("cosf", 20_000, -100.0, 100.0, cosf, f64::cos, 4.0);
     sweep("tanf", 20_000, -0.7, 0.7, tanf, f64::tan, 4.0);
     sweep("tanf", 20_000, -100.0, 100.0, tanf, f64::tan, 8.0);
-    // the fdlibm reduction tops out at 2^7·π/2; above that we take our own exact path
-    sweep("sinf+", 20_000, 200.0, 1.0e7, sinf, f64::sin, 4.0);
-    sweep("cosf+", 20_000, 200.0, 1.0e7, cosf, f64::cos, 4.0);
-    sweep("sinf+", 5_000, 1.0e20, 1.0e30, sinf, f64::sin, 4.0);
+    // above 2^7·π/2, __kernel_rem_pio2f: its last steps chop, so the reduced argument is good to an absolute
+    // ~2^-22, not to an ulp of the result (sinf(9978003) is 217 ulp off, as the game's own is)
+    sweep_abs("sinf+", 20_000, 200.0, 1.0e7, sinf, f64::sin, 4.0e-7);
+    sweep_abs("cosf+", 20_000, 200.0, 1.0e7, cosf, f64::cos, 4.0e-7);
+    sweep_abs("sinf+", 5_000, 1.0e20, 1.0e30, sinf, f64::sin, 4.0e-7);
+    sweep_abs("sinf+", 5_000, 1.0e30, 3.0e38, sinf, f64::sin, 4.0e-7);
     assert_eq!(sinf(0.0), 0.0);
     assert_eq!(cosf(0.0), 1.0);
     assert_eq!(sinf(-0.0).to_bits(), (-0.0f32).to_bits());
@@ -157,7 +174,10 @@ fn saturates_where_the_ee_cannot_hold_the_answer() {
     assert_eq!(powf(10.0, 60.0), f32::MAX);
     assert_eq!(powf(10.0, -60.0), 0.0);
     assert_eq!(logf(0.0), -f32::MAX);
-    assert_eq!(sinf(f32::MAX), sinf(f32::from_bits(0x7f80_0000)), "an Inf pattern reads as ±max");
+    // sin/cos/tan reduce a large argument from its bits alone, so there an Inf pattern is 2^128, not ±max
+    // (Hot Shots Tennis' own sinf: 0x3f7990fc)
+    assert_eq!(sinf(f32::from_bits(0x7f80_0000)).to_bits(), 0x3f79_90fc);
+    assert_ne!(sinf(f32::MAX), sinf(f32::from_bits(0x7f80_0000)));
 }
 
 /// A digest over a fixed input set. If this changes, *some* result changed — which is either a bug or a

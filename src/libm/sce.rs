@@ -6,10 +6,13 @@
 //!
 //! - `acosf` and `powf`: every polynomial constant one ulp below the correctly rounded decimal, the term order
 //!   of that build, and `powf`'s older `t_h` seed (`+ 0x40000`, unmasked).
+//! - `sinf`, `cosf`, `tanf` above 201 radians: `__kernel_rem_pio2f`'s `PIo2` pieces, six of them one ulp below
+//!   the exact value (the same literal conversion). Below that the reduction never reads them.
 //! - `atan2f`: the older edge cases (a denormal `y` or `x` counts as zero, no `tiny` nudges, `|y/x| > 2^60`
 //!   gives `π/2` without the `pi_lo` half) and π written one ulp low.
 //!
-//! `sinf cosf tanf atanf sqrtf` are the same code in both builds and are re-exported from [`super`].
+//! `atanf sqrtf` are the same code in both builds and are re-exported from [`super`]; `sinf cosf tanf` share its
+//! code and only pass their own table.
 //!
 //! Try this flavour when the oracle says [`super`]'s `acosf`/`powf`/`atan2f` are one ulp off your game's.
 //!
@@ -20,7 +23,29 @@
 use super::b;
 use crate::fpu::F;
 
-pub use super::{atanf, cosf, sinf, sqrtf, tanf};
+pub use super::{atanf, sqrtf};
+
+/// `__kernel_rem_pio2f`'s `PIo2` as this build has it: `π/2` in 8-bit pieces, written in decimal and converted
+/// toward zero, so the pieces whose decimal wasn't exact land one ulp low.
+const PIO2: [u32; 11] = [
+    0x3fc90000, 0x39f00000, 0x37d9ffff, 0x33a20000, 0x2e83ffff, 0x2b4fffff, 0x27c1ffff, 0x22cfffff, 0x1fc40000,
+    0x1bc5ffff, 0x17440000,
+];
+
+/// `sinf`, this build's: [`super::sinf`] with its own `PIo2`.
+pub fn sinf(x: f32) -> f32 {
+    super::sinf_with(x, &PIO2)
+}
+
+/// `cosf`, this build's: [`super::cosf`] with its own `PIo2`.
+pub fn cosf(x: f32) -> f32 {
+    super::cosf_with(x, &PIO2)
+}
+
+/// `tanf`, this build's: [`super::tanf`] with its own `PIo2`.
+pub fn tanf(x: f32) -> f32 {
+    super::tanf_with(x, &PIO2)
+}
 
 /// `atan2f(y, x)`, this build's: denormal arguments count as zero, as everywhere on the EE.
 pub fn atan2f(y: f32, x: f32) -> f32 {
