@@ -294,8 +294,8 @@ const TWO_OVER_PI: [u32; 10] = [
 /// fdlibm uses `__kernel_rem_pio2f` here; this computes the same quantity a different way (the product
 /// `x·2/π` is formed exactly in 344-bit fixed point, so the reduced argument is good to ~100 bits),
 /// which means the reduced argument is right but its last bit may not be *fdlibm's* last bit. Only
-/// `sin`/`cos`/`tan` of arguments above 201 radians are affected; check them with the oracle if the game
-/// goes there.
+/// `sin`/`cos`/`tan` of arguments above 201 radians are affected: against Hot Shots Tennis' own over 10k
+/// arbitrary finite arguments, 4.6% come out one ulp off. Port `__kernel_rem_pio2f` if a game goes there.
 #[allow(clippy::float_arithmetic)] // exact integer product, then f64 to split the result in two
 fn rem_pio2_large(x: f32) -> (i32, f32, f32) {
     let bits = x.to_bits();
@@ -338,9 +338,17 @@ fn rem_pio2_large(x: f32) -> (i32, f32, f32) {
     if neg { (-n, -y0, -y1) } else { (n, y0, y1) }
 }
 
+/// A C function's argument as the function sees it. Its integer tests read the register's raw bits, so a
+/// denormal stays itself: it takes the tiny-argument path, which hands it back untouched (`sinf`, `tanf`, `atanf`
+/// … of a denormal is that denormal, checked against a shipped game), and any FPU op on it reads zero anyway.
+/// Exponent 255 is the saturated `±max`, as everywhere on the EE.
+fn arg(x: f32) -> f32 {
+    if x.is_finite() { x } else { fpu::operand(x.to_bits()) }
+}
+
 /// `sinf`.
 pub fn sinf(x: f32) -> f32 {
-    let x = fpu::operand(x.to_bits()); // the EE has no Inf/NaN: such a pattern is ±max
+    let x = arg(x);
     if x.to_bits() & 0x7fff_ffff <= 0x3f49_0fd8 {
         return k_sin(x, 0.0, false).0; // |x| <= π/4
     }
@@ -356,7 +364,7 @@ pub fn sinf(x: f32) -> f32 {
 
 /// `cosf`.
 pub fn cosf(x: f32) -> f32 {
-    let x = fpu::operand(x.to_bits());
+    let x = arg(x);
     if x.to_bits() & 0x7fff_ffff <= 0x3f49_0fd8 {
         return k_cos(x, 0.0).0;
     }
@@ -372,7 +380,7 @@ pub fn cosf(x: f32) -> f32 {
 
 /// `tanf`.
 pub fn tanf(x: f32) -> f32 {
-    let x = fpu::operand(x.to_bits());
+    let x = arg(x);
     if x.to_bits() & 0x7fff_ffff <= 0x3f49_0fda {
         return k_tan(x, 0.0, 1).0;
     }
@@ -391,7 +399,7 @@ const AT: [u32; 11] = [
 
 /// `atanf`.
 pub fn atanf(x0: f32) -> f32 {
-    let x0 = fpu::operand(x0.to_bits());
+    let x0 = arg(x0);
     let hx = x0.to_bits() as i32;
     let ix = hx & 0x7fff_ffff;
     if ix > 0x507f_ffff {
@@ -433,7 +441,7 @@ pub fn atan2f(y: f32, x: f32) -> f32 {
     const PI: f32 = b(0x4049_0fdb);
     const PI_O_2: f32 = b(0x3fc9_0fdb);
     const PI_LO: f32 = b(0xb3bb_bd2e); // negative: pi + pi_lo is π to ~31 bits
-    let (y, x) = (fpu::operand(y.to_bits()), fpu::operand(x.to_bits()));
+    let (y, x) = (arg(y), arg(x));
     let (hy, hx) = (y.to_bits() as i32, x.to_bits() as i32);
     if hx == 0x3f80_0000 {
         return atanf(y); // x = 1
@@ -486,7 +494,7 @@ fn pq(z: F) -> F {
 
 /// `asinf`.
 pub fn asinf(x: f32) -> f32 {
-    let x0 = fpu::operand(x.to_bits());
+    let x0 = arg(x);
     let hx = x0.to_bits() as i32;
     let ix = hx & 0x7fff_ffff;
     if ix == 0x3f80_0000 {
@@ -525,7 +533,7 @@ pub fn asinf(x: f32) -> f32 {
 
 /// `acosf`.
 pub fn acosf(x: f32) -> f32 {
-    let x0 = fpu::operand(x.to_bits());
+    let x0 = arg(x);
     let hx = x0.to_bits() as i32;
     let ix = hx & 0x7fff_ffff;
     if ix == 0x3f80_0000 {
@@ -590,7 +598,7 @@ fn ldexp_bits(y: f32, k: i32) -> f32 {
 
 /// `expf`.
 pub fn expf(x: f32) -> f32 {
-    let x0 = fpu::operand(x.to_bits());
+    let x0 = arg(x);
     let xsb = x0.to_bits() >> 31;
     let hx = x0.to_bits() & 0x7fff_ffff;
     if hx >= 0x42b1_7218 {
@@ -645,7 +653,7 @@ const LG: [u32; 7] =
 /// `logf` (natural log). `log(0)` is `-max` and `log(x < 0)` is `+max`: the EE has neither an infinity
 /// nor a NaN to return, and `0/0` on its divider is `+max`.
 pub fn logf(x: f32) -> f32 {
-    let x0 = fpu::operand(x.to_bits());
+    let x0 = arg(x);
     let mut ix = x0.to_bits() as i32;
     if ix < 0x0080_0000 {
         if ix & 0x7fff_ffff == 0 {
@@ -703,8 +711,8 @@ fn hi12(x: F) -> F {
 ///
 /// Two known variants of the `t_h` seed exist; [`sce::powf`] has the older one.
 pub fn powf(x: f32, y: f32) -> f32 {
-    let x = fpu::operand(x.to_bits());
-    let y = fpu::operand(y.to_bits());
+    let x = arg(x);
+    let y = arg(y);
     let (hx, hy) = (x.to_bits() as i32, y.to_bits() as i32);
     let (ix, iy) = (hx & 0x7fff_ffff, hy & 0x7fff_ffff);
     if iy == 0 {

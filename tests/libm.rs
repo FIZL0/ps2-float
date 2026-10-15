@@ -183,3 +183,15 @@ fn results_are_identical_on_every_platform() {
     assert_eq!(h, DIGEST, "libm results changed (or differ on this platform): {h:#018x}");
 }
 const DIGEST: u64 = 0x9da9_a6e5_3818_e896;
+
+/// The tiny-argument paths hand a denormal back as it came (the integer test reads its bits; no FPU op runs).
+#[test]
+fn denormal_arguments_come_back_unchanged() {
+    for bits in [0x0063_da83u32, 0x8079_d164, 0x0000_0001] {
+        let x = f32::from_bits(bits);
+        for (name, y) in [("sinf", sinf(x)), ("tanf", tanf(x)), ("atanf", atanf(x))] {
+            assert_eq!(y.to_bits(), bits, "{name}({bits:#010x})");
+        }
+    }
+    assert_eq!(cosf(f32::from_bits(0x0063_da83)), 1.0);
+}
