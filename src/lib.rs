@@ -111,5 +111,5 @@ pub mod libm;
 pub mod rand;
 pub mod vu;
 
-pub use fpu::{F, f, f32s, fs};
+pub use fpu::{Acc, F, f, f32s, fs};
 pub use vu::{Dest, Field, Lane, Lanes, V4, Vf, lanes, v4};

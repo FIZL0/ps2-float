@@ -16,7 +16,7 @@ operations only, never the host's libm.
 
 ```toml
 [dependencies]
-ps2-float = { git = "https://github.com/FIZL0/ps2-float", tag = "v0.1.0" }
+ps2-float = { git = "https://github.com/FIZL0/ps2-float", tag = "v0.2.0" }
 ```
 
 The crate docs (`cargo doc --open`) explain each deviation from IEEE 754 and what it looks like in a port
