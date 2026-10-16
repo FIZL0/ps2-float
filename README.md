@@ -40,5 +40,10 @@ and bump the tag in every dependent (opentennis, both kits, ps2-oracle). Never p
 
 ## License
 
-MIT. `libm` is a port of fdlibm (Copyright (C) 1993 Sun Microsystems, freely redistributable with its
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option.
+
+`libm` is a port of fdlibm (Copyright (C) 1993 Sun Microsystems, freely redistributable with its
 notice, kept in `src/libm.rs`).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this crate, as
+defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
