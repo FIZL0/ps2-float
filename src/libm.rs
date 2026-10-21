@@ -29,7 +29,7 @@
 //! # Verify against the game, do not trust this file
 //!
 //! fdlibm exists in several vintages and every toolchain rounds its decimal constants its own way. The
-//! Sony SDK build that Hot Shots Tennis links has *every* polynomial constant in `acosf` and `powf`
+//! Sony SDK build that Hot Shots Tennis links has *every* polynomial constant in `asinf`, `acosf` and `powf`
 //! exactly one ulp **below** the value here, because that compiler converted decimal literals toward
 //! zero instead of to nearest; its `powf` also uses an older `t_h` seed and its `atan2f` older edge
 //! cases. Those are last-bit differences that a bit-exact replay test will find three hours into a
@@ -44,7 +44,7 @@
 //! # What is here
 //!
 //! `sinf cosf tanf asinf acosf atanf atan2f expf logf powf sqrtf`, all on [`crate::F`] arithmetic, and
-//! [`sce`]'s `acosf atan2f powf sinf cosf tanf`.
+//! [`sce`]'s `asinf acosf atan2f powf sinf cosf tanf`.
 //! Argument reduction for `sin`/`cos`/`tan` is fdlibm's: its three-step reduction up to
 //! `2^7·π/2 ≈ 201`, `__kernel_rem_pio2f` above that, for any finite argument.
 //!

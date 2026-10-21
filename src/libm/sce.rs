@@ -4,8 +4,9 @@
 //!
 //! What differs from [`super`]:
 //!
-//! - `acosf` and `powf`: every polynomial constant one ulp below the correctly rounded decimal, the term order
-//!   of that build, and `powf`'s older `t_h` seed (`+ 0x40000`, unmasked).
+//! - `asinf`, `acosf` and `powf`: every polynomial constant (and `asinf`'s `π/4` high part) one ulp below the
+//!   correctly rounded decimal, the term order of that build, and `powf`'s older `t_h` seed (`+ 0x40000`,
+//!   unmasked).
 //! - `sinf`, `cosf`, `tanf` above 201 radians: `__kernel_rem_pio2f`'s `PIo2` pieces, six of them one ulp below
 //!   the exact value (the same literal conversion). Below that the reduction never reads them.
 //! - `atan2f`: the older edge cases (a denormal `y` or `x` counts as zero, no `tiny` nudges, `|y/x| > 2^60`
@@ -14,7 +15,7 @@
 //! `atanf sqrtf` are the same code in both builds and are re-exported from [`super`]; `sinf cosf tanf` share its
 //! code and only pass their own table.
 //!
-//! Try this flavour when the oracle says [`super`]'s `acosf`/`powf`/`atan2f` are one ulp off your game's.
+//! Try this flavour when the oracle says [`super`]'s `asinf`/`acosf`/`powf`/`atan2f` are an ulp off your game's.
 //!
 //! `powf` covers what such games call it with: `x > 0` and `|y| < 2^27` (plus fdlibm's answer for a negative
 //! `x` to a fractional power, `+max` on the EE); other arguments panic rather than guess.
@@ -88,23 +89,61 @@ pub fn atan2f(y: f32, x: f32) -> f32 {
 // --- acos ---------------------------------------------------------------------------------------------------------
 
 
+/// `asinf`/`acosf`'s rational approximation `p(z)/q(z)` in this build's term order and constants:
+/// `p = z·(pS0 + z·(pS1 + … z·pS5))`, `q = 1 + z·(qS1 + … z·qS4)`, each worked from the innermost term out.
+fn pq(z: F) -> F {
+    let mut p = z * b(0x3811_ef08) + b(0x3a4f_7f04);
+    for c in [0xbd24_1146, 0x3e4e_0aa8, 0xbea6_b08f, 0x3e2a_aaaa] {
+        p = z * p + b(c);
+    }
+    let mut q = z * b(0x3d9d_c62d) + b(0xbf30_3360);
+    for c in [0x4001_572c, 0xc019_d138] {
+        q = z * q + b(c);
+    }
+    z * p / (z * q + 1.0)
+}
+
+const PIO2_HI: f32 = b(0x3fc9_0fda);
+const PIO2_LO: f32 = b(0x33a2_2168);
+
+/// `asinf`, this build's: `π/4`'s high part one ulp low (`0x3f490fda`) besides [`pq`]'s constants, so near
+/// `±0.7071` it can land an ulp or two from [`super::asinf`]. Past `±1` it answers `+max` (0/0 on the EE).
+pub fn asinf(x: f32) -> f32 {
+    const PIO4_HI: f32 = b(0x3f49_0fda);
+    let hx = x.to_bits() as i32;
+    let ix = hx & 0x7fff_ffff;
+    let x = F(x);
+    if ix == 0x3f80_0000 {
+        return (x * PIO2_HI + x * PIO2_LO).0;
+    }
+    if ix > 0x3f80_0000 {
+        return f32::MAX;
+    }
+    if ix < 0x3f00_0000 {
+        if ix < 0x3200_0000 {
+            return x.0; // |x| < 2^-27
+        }
+        return (x + x * pq(x * x)).0;
+    }
+    let t = (1.0 - x.abs()) * 0.5;
+    let s = F(sqrtf(t.0));
+    let r = pq(t);
+    let a = if ix >= 0x3f79_999a {
+        // |x| > 0.975
+        PIO2_HI - (F(2.0) * (s + s * r) - PIO2_LO)
+    } else {
+        let w = F(b(s.0.to_bits() & 0xffff_f000));
+        let c = (t - w * w) / (s + w);
+        let p = F(2.0) * s * r - (PIO2_LO - F(2.0) * c);
+        let q = PIO4_HI - F(2.0) * w;
+        PIO4_HI - (p - q)
+    };
+    if hx > 0 { a.0 } else { (-a).0 }
+}
+
 /// `acosf`. Its `sqrtf` is fdlibm's bit-by-bit one, correctly rounded.
 pub fn acosf(x: f32) -> f32 {
     const PI: f32 = b(0x4049_0fda);
-    const PIO2_HI: f32 = b(0x3fc9_0fda);
-    const PIO2_LO: f32 = b(0x33a2_2168);
-    // p(z)/q(z) in this build's term order: p = z·(pS0 + z·(pS1 + … z·pS5)), q = 1 + z·(qS1 + … z·qS4)
-    let pq = |z: F| {
-        let mut p = z * b(0x3811_ef08) + b(0x3a4f_7f04);
-        for c in [0xbd24_1146, 0x3e4e_0aa8, 0xbea6_b08f, 0x3e2a_aaaa] {
-            p = z * p + b(c);
-        }
-        let mut q = z * b(0x3d9d_c62d) + b(0xbf30_3360);
-        for c in [0x4001_572c, 0xc019_d138] {
-            q = z * q + b(c);
-        }
-        z * p / (z * q + 1.0)
-    };
     let hx = x.to_bits() as i32;
     let ix = hx & 0x7fff_ffff;
     if ix == 0x3f80_0000 {

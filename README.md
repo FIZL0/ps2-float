@@ -7,7 +7,7 @@ exactly:
 |---|---|
 | `fpu` | EE COP1 single precision: chop rounding, the one-guard-bit adder, no Inf/NaN/denormals, `madd.s` ≠ FMA; the `F` type whose `+ − × ÷` are the FPU's |
 | `vu` | VU0 macro mode: full-width adder, chop everywhere (`vsqrt` included), clamping; `Vf` vectors, `Lane` scalars |
-| `libm` | fdlibm's `sinf cosf tanf asinf acosf atanf atan2f expf logf powf sqrtf` on EE arithmetic; `libm::sce` the Sony SDK build's `acosf atan2f powf` |
+| `libm` | fdlibm's `sinf cosf tanf asinf acosf atanf atan2f expf logf powf sqrtf` on EE arithmetic; `libm::sce` the Sony SDK build's `asinf acosf atan2f powf` |
 | `rand` | newlib's `rand()` and MT19937 |
 
 `#![no_std]`, `#![forbid(unsafe_code)]`, no dependencies (`serde` derives for `rand` behind the optional

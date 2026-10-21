@@ -12,6 +12,7 @@ fn close_to_the_true_functions() {
         assert!((sce::powf(x, 1.1) / x.powf(1.1) - 1.0).abs() < 1e-6, "powf({x}, 1.1)");
         let c = i as f32 / 1000.0 * 2.0 - 1.0;
         assert!((sce::acosf(c) - c.acos()).abs() < 2e-6, "acosf({c})");
+        assert!((sce::asinf(c) - c.asin()).abs() < 2e-6, "asinf({c})");
         let (y, x) = ((i as f32 * 0.37).sin(), (i as f32 * 0.37).cos());
         assert!((sce::atan2f(y, x) - y.atan2(x)).abs() < 2e-6, "atan2f({y}, {x})");
     }
@@ -24,7 +25,7 @@ fn shares_the_generic_kernels_and_differs_where_the_builds_do() {
         let x = f32::from_bits(0x3c00_0000 + i * 2_936); // 2^-7 .. 1
         assert_eq!(sce::sinf(x).to_bits(), libm::sinf(x).to_bits());
         assert_eq!(sce::atanf(x).to_bits(), libm::atanf(x).to_bits());
-        differ[0] += (sce::acosf(-x) != libm::acosf(-x)) as u32;
+        differ[0] += (sce::acosf(-x) != libm::acosf(-x) && sce::asinf(x) != libm::asinf(x)) as u32;
         differ[1] += (sce::powf(x + 0.5, 1.7) != libm::powf(x + 0.5, 1.7)) as u32;
         differ[2] += (sce::atan2f(-x, -0.75) != libm::atan2f(-x, -0.75)) as u32;
     }
@@ -55,4 +56,21 @@ fn edge_cases_of_this_build() {
     assert_eq!(sce::acosf(-1.0), f32::from_bits(0x4049_0fda), "π, one ulp low in this build");
     assert_eq!(sce::atan2f(0.0, -1.0), f32::from_bits(0x4049_0fda));
     assert_eq!(sce::atan2f(1.0, 0.0), f32::from_bits(0x3fc9_0fda));
+}
+
+/// Near 1/√2 this build's `π/4` high part (an ulp low) shows: values from Hot Shots Tennis' own `asinf`
+/// (ps2-oracle; the 20k-input run is opentennis' `hst-oracle` libm test), where the generic build is 1–2 ulps off.
+#[test]
+fn asinf_near_the_diagonal_as_the_game() {
+    for x in (0x3f34_f000..0x3f35_2000u32).map(f32::from_bits) {
+        let (sce, generic) = (sce::asinf(x).to_bits() as i64, libm::asinf(x).to_bits() as i64);
+        assert!((sce - generic).abs() <= 2, "asinf({x:e})");
+    }
+    // the smallest argument the game's asinf takes past π/4 (0x3f490fdb)
+    assert!(sce::asinf(f32::from_bits(0x3f35_04f5)) > core::f32::consts::FRAC_PI_4);
+    assert!(sce::asinf(f32::from_bits(0x3f35_04f4)) <= core::f32::consts::FRAC_PI_4);
+    assert_eq!(sce::asinf(1.0), f32::from_bits(0x3fc9_0fda));
+    assert_eq!(sce::asinf(-1.0), f32::from_bits(0xbfc9_0fda));
+    assert_eq!(sce::asinf(1.5), f32::MAX, "0/0 on the EE: +max");
+    assert_eq!(sce::asinf(1e-9), 1e-9);
 }
